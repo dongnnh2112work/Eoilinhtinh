@@ -1,0 +1,163 @@
+# Eoilinhtinh — Cursor AI Rules
+# Interactive 3D Lamp Kiosk · Next.js + MediaPipe + React Three Fiber
+# ─────────────────────────────────────────────────────────────────────
+# These rules enforce the performance and UX contracts that keep the
+# kiosk at 60 fps on a single-board event PC with no mouse/keyboard.
+# Read them before touching any file in this repo.
+
+## THREAD SAFETY — NEVER VIOLATE
+
+- ALL MediaPipe inference lives in `src/workers/handTracking.worker.ts`.
+  NEVER import HandLandmarker, FilesetResolver, or any @mediapipe/* into
+  a React component or hook on the main thread.
+
+- The worker communicates via a SINGLE `postMessage` round-trip per frame.
+  NEVER add synchronous cross-thread calls or SharedArrayBuffer patterns.
+
+- `useHandStore` is written ONLY by the worker result handler in
+  `useHandWorker.ts`. NO component calls `useHandStore.setState()` directly.
+
+- Inside `useFrame()` callbacks, ALWAYS read Zustand state via `getState()`:
+    const { leftHand, rightHand } = useHandStore.getState();   // correct
+    const { leftHand } = useHandStore();                       // WRONG — re-renders every frame
+
+- NEVER call `useState` or `useReducer` for data that updates every frame.
+  Use `useRef` for mutable frame-rate values (rotation delta, zoom, etc.).
+
+## ZERO RE-RENDER CONTRACT
+
+- `useHandStore.setState()` MUST be called with the same object shape it was
+  initialised with. Adding new keys to the frame-rate store is forbidden — use
+  a separate Zustand slice for application state.
+
+- `useGalleryStore` (lamp navigation, isGrabbing, isSelected) is the only
+  store that React components may subscribe to. Subscribe with selectors:
+    useGalleryStore((s) => s.activeLampIndex)   // correct — only re-renders on index change
+    useGalleryStore()                            // WRONG — re-renders on ANY store mutation
+
+- `useTutorialStore` follows the same selector rule.
+
+## GESTURE MATH — PURE FUNCTIONS ONLY
+
+- `src/lib/gestures.ts` MUST remain a pure math module: no React, no Zustand,
+  no side effects, no DOM access.
+
+- Every gesture measurement MUST be divided by `handSize(landmarks)` before
+  comparison with a threshold. Raw pixel or normalized coordinates are NOT
+  distance-invariant and will fail at 1.5 m standing distance.
+
+- `grabConfidence()` returns a continuous 0–1 float. NEVER threshold it to
+  a boolean before storing — the glow shader needs the continuous value.
+
+- `detectSwipe()` requires BOTH displacement ≥ 0.22 AND velocity ≥ 0.0008/ms.
+  Do not weaken either threshold; false swipes disrupt the 1.5 m user experience.
+
+## THREE.JS / R3F PERFORMANCE
+
+- The Canvas MUST have `flat={true}`. Without it, ACESFilmic tone-mapping
+  clamps emissiveIntensity > 1.0 and Bloom has no effect.
+
+- NEVER read `.boundingSphere` without calling `geometry.computeBoundingSphere()`
+  first. STL files do not pre-compute it.
+
+- NEVER call `geometry.computeVertexNormals()` inside a `useFrame` callback.
+  Call it once inside `useMemo` when the geometry first loads.
+
+- `THREE.MathUtils.damp(current, target, lambda, delta)` is mandatory for ALL
+  animated values. NEVER use `lerp(a, b, 0.1)` with a fixed coefficient — it
+  is frame-rate dependent and will judder at non-60fps.
+
+- `key={modelUrl}` on the `<Suspense>` boundary is required for model hot-swap.
+  Removing it causes the old geometry to persist and the new one to overlay it.
+
+- Bloom post-process settings are locked: luminanceThreshold 0.18, intensity 1.8,
+  KernelSize.LARGE, blendFunction ADD, mipmapBlur true.
+  Do not change these without testing at the event venue lighting conditions.
+
+## STL PIPELINE
+
+- STL files carry ZERO material data. ALWAYS inject a `<meshStandardMaterial>`
+  manually in the LampSTLMesh component.
+
+- Auto-scale formula: `TARGET_WORLD_SIZE / (boundingSphere.radius * 2)` where
+  `TARGET_WORLD_SIZE = 3.2`. Do not hard-code per-model scale values.
+
+- NEVER use `<primitive object={geometry} />` for STL — always compose as
+  `<mesh><bufferGeometry /><meshStandardMaterial /></mesh>`.
+
+## UPLOAD / CMS
+
+- `src/app/actions/uploadModel.ts` is a Next.js Server Action (`'use server'`).
+  NEVER call Vercel Blob `put()` from a client component or API route.
+
+- The five validation layers MUST run in order: File instance check →
+  extension check → size check → magic-byte sniff → filename sanitize.
+  Do not reorder or skip any layer.
+
+- `addRandomSuffix: false` is intentional — the timestamp prefix already
+  prevents collisions. Do not remove it.
+
+## TYPOGRAPHY — 1.5 M OUTDOOR RULE
+
+- Minimum body text: `text-xl` (20 px). This is a hard floor for anything
+  a standing user 1–1.5 m away must read.
+
+- Lamp names: `text-7xl font-black`. Do not downsize "to fit" — truncate
+  the string instead if it overflows.
+
+- Taglines: `text-3xl font-bold` minimum.
+- Descriptions: `text-2xl font-semibold` minimum.
+- Gesture hint icons: minimum 56 × 56 px rendered size (w-14 h-14).
+
+## SAFE ZONE — NO BOTTOM UI
+
+- NOTHING interactive or critical may be placed in the bottom 20% of the
+  screen (below `bottom-[20vh]`). The bottom edge is unreachable at the
+  event PC's height and viewing distance.
+
+- All fixed UI must use `top-*`, `left-*`, `right-*`, or vertical centering
+  with `top-1/2 -translate-y-1/2`. The `bottom-*` utility is BANNED for
+  permanent elements.
+
+- The Skip button in TutorialOverlay is `fixed top-10 right-10`.
+  Do not move it.
+
+## WASM ASSETS
+
+- MediaPipe WASM files are served from `/public/mediapipe/` as static assets.
+  They CANNOT be processed by webpack. NEVER import them — reference via URL string.
+
+- The worker resolves the base path as:
+    const wasmBasePath = '/mediapipe';
+  Do not use relative paths or dynamic `import.meta.url` tricks inside workers.
+
+## NAMING AND FILE PLACEMENT
+
+- Gesture bridge logic → `src/hooks/useGestureDetector.ts` only.
+- Raw landmark store → `src/store/useHandStore.ts` only.
+- Gallery/nav state → `src/store/useGalleryStore.ts` only.
+- Tutorial state → `src/store/useTutorialStore.ts` only.
+- Pure gesture math → `src/lib/gestures.ts` only.
+- Do NOT create additional stores, hooks, or math utilities without discussion.
+
+## FORBIDDEN PATTERNS
+
+```typescript
+// BANNED — frame-rate subscriber
+const { leftHand } = useHandStore();
+
+// BANNED — lerp with fixed coefficient
+mesh.rotation.y = THREE.MathUtils.lerp(mesh.rotation.y, target, 0.05);
+
+// BANNED — MediaPipe on main thread
+import { HandLandmarker } from '@mediapipe/tasks-vision';
+
+// BANNED — UI at bottom
+className="fixed bottom-10 right-10"
+
+// BANNED — raw coordinate threshold (not normalized by handSize)
+if (dist3(landmarks[8], landmarks[4]) < 0.08) { /* grab */ }
+
+// BANNED — geometry mutation in useFrame
+geometry.computeVertexNormals(); // inside useFrame callback
+```
