@@ -1,7 +1,7 @@
 # PROJECT CONTEXT — Eoilinhtinh Interactive 3D Landing Page
 **Version:** MVP 1.0 — Architecture frozen as of April 2026
 **Architect:** Factory Interactive
-**Status:** Running end-to-end locally. Gesture pipeline, tutorial auto-advance, 3MF catalogue (4 models), and hydration guards are implemented.
+**Status:** Running end-to-end locally. Gesture pipeline, tutorial auto-advance, 3MF catalogue (5 models), and hydration guards are implemented.
 
 ---
 
@@ -238,6 +238,8 @@ detectIndexPointDirection(landmarks): 'LEFT' | 'RIGHT' | 'NONE'
 
 Point validation uses normalized geometry checks (index extension, horizontal dominance, vertical rejection, middle-finger curl guard) so it remains stable across 1.0–1.5m distance and avoids accidental open-palm triggers.
 
+Tutorial copy and iconography for this phase are aligned with the new interaction: **"Point to Explore"** with left/right index-point icons (no open-palm swipe icon).
+
 ### 5.5 Rotation Mapping (Current UX)
 
 Rotation is now driven by **2D palm deltas** (camera plane), not absolute open-palm mapping:
@@ -246,6 +248,7 @@ Rotation is now driven by **2D palm deltas** (camera plane), not absolute open-p
 - `deltaX` (right hand moving left/right) integrates into `rotationTarget.rotX`.
 - `deltaY` (right hand moving up/down) integrates into `rotationTarget.rotY` (inverted so moving hand up rotates positive Y).
 - Deadzone + clamp + smoothing are applied per frame to reduce jitter.
+- If lamp details are open (`isSelected`) and the user performs a **right-hand fist**, rotation is reset to origin (`rotX = 0`, `rotY = 0`) to quickly recover from extreme 360° turns.
 
 ### 5.6 Pinch Zoom
 
@@ -271,12 +274,13 @@ pinchNorm = clamp( (dist3(THUMB_TIP, INDEX_TIP)/handSize - 0.15) / (0.80 - 0.15)
 ### 6.2 3MF Loading Pipeline
 
 3MF is the active model format for this project. The catalogue currently uses:
-`/public/models/lamp-aurora.3mf`, `/public/models/lamp-helix.3mf`, `/public/models/lamp-strata.3mf`, `/public/models/main_rc1.3mf` (Cloud Glow / "Đèn đám mây").
+`/public/models/lamp-aurora.3mf`, `/public/models/lamp-helix.3mf`, `/public/models/lamp-strata.3mf`, `/public/models/main_rc1.3mf` (Cloud Glow / "Đèn đám mây"), `/public/models/lampshade.3mf` (Waves Designer Lamp).
 
 ```
 ThreeMFLoader.load(url, onLoad, onProgress, onError)
   → Object3D scene graph (possibly multiple meshes)
-  → traverse meshes → inject MeshStandardMaterial
+  → traverse meshes → preserve source 3MF material/color when present
+  → fallback: inject MeshStandardMaterial only if mesh has no valid material
   → Box3 normalization to TARGET_WORLD_SIZE(3.2)
   → recenter model to world origin
   → if parse/load fails: render procedural fallback mesh (keeps app interactive)
@@ -285,9 +289,10 @@ ThreeMFLoader.load(url, onLoad, onProgress, onError)
 **Why bounding sphere, not box?**
 The sphere gives a uniform scale factor accounting for the longest dimension across all three axes simultaneously. A long thin lamp and a compact round lamp both end up fitting the same viewport footprint.
 
-### 6.3 Material Injection
+### 6.3 Material Preservation + Fallback Injection
 
-Loaded 3MF meshes are normalized to a unified material profile in `LampModelMesh`:
+`LampModelMesh` now keeps material/color embedded in the source 3MF whenever available.
+Fallback material is applied only when a mesh arrives without a valid material:
 
 ```tsx
 new THREE.MeshStandardMaterial({
@@ -337,7 +342,7 @@ EffectComposer (multisampling: 4)
 </Suspense>
 ```
 
-When `activeModelUrl` changes (navigation swipe or admin upload), `key` forces React to **unmount and remount** the Suspense boundary. This ensures the old geometry is disposed, `LoadingFallback` reappears during the new fetch, and the loader's internal cache is keyed per URL.
+When `activeModelUrl` changes (navigation point-nav or admin upload), `key` forces React to **unmount and remount** the Suspense boundary. This ensures the old geometry is disposed, `LoadingFallback` reappears during the new fetch, and the loader's internal cache is keyed per URL.
 
 ---
 
@@ -471,9 +476,9 @@ AdminUpload.tsx (client)
 |---|---|
 | Initial load | `activeLamp.modelPath` (static `/public` 3MF path) |
 | Admin uploads new STL (legacy) | Vercel Blob CDN URL |
-| User swipes to next lamp | New lamp's `modelPath` (Blob URL discarded) |
+| User navigates by index-point gesture | New lamp's `modelPath` (Blob URL discarded) |
 
-Navigation **always** resets `activeModelUrl` to the catalogue's static path. This is intentional — the display should always show the correct product after a swipe.
+Navigation **always** resets `activeModelUrl` to the catalogue's static path. This is intentional — the display should always show the correct product after a gesture-based lamp change.
 
 ---
 
@@ -498,6 +503,7 @@ These constants are the primary knobs for calibrating the experience. They are *
 | `TARGET_WORLD_SIZE` | `Scene3D.tsx` | `3.2` | 3MF auto-scale target diameter |
 | `ROTATE_X_SENSITIVITY` | `useGestureDetector.ts` | `π × 2.4` | Horizontal hand -> rotX |
 | `ROTATE_Y_SENSITIVITY` | `useGestureDetector.ts` | `π × 2.4` | Vertical hand -> rotY |
+| `GRAB_SELECT_HOLD_MS` | `useGestureDetector.ts` | `800` | Left-fist hold time before select |
 | `SELECTED_OFFSET_X` | `Scene3D.tsx` | `-1.05` | Model left-shift when panel opens |
 | `ROTATE_REQUIRED_SECONDS` | `TutorialOverlay.tsx` | `3.5` | Rotate step completion timer |
 
@@ -512,7 +518,7 @@ These constants are the primary knobs for calibrating the experience. They are *
 - Pure gesture math library (`lib/gestures.ts`)
 - Scene3D: ThreeMFLoader, auto-scale, robust fallback mesh, Bloom
 - Tutorial overlay (5-step state machine, `guardedAdvance`)
-- Main overlay (InfoPanel, LampCounter, SwipeFeedback)
+- Main overlay (InfoPanel, LampCounter, gesture feedback)
 - Server Action + Vercel Blob upload
 - AdminUpload component
 - Gesture bridge (`useGestureDetector.ts`) wired and active
