@@ -41,6 +41,17 @@ const LAMP_CATALOGUE: Lamp[] = [
     material: 'PLA Silk Ivory',
     printTime: '7h 55m',
   },
+  {
+    id: 'lamp-cloud',
+    name: 'Cloud Glow',
+    tagline: 'Đèn đám mây',
+    description:
+      'Đèn đám mây với khối dáng mềm và ánh sáng dịu, phù hợp cho không gian trưng bày cần cảm giác nhẹ nhàng và ấm áp.',
+    modelPath: '/models/main_rc1.3mf',
+    accentColor: '#A8D8FF',
+    material: 'PLA Matte White',
+    printTime: '8h 10m',
+  },
 ];
 
 // =============================================================================

@@ -240,93 +240,52 @@ export function calculatePinch(landmarks: NormalizedLandmark[]): number {
 }
 
 // =============================================================================
-// SWIPE DETECTION (Wrist X Velocity over Time)
+// INDEX-POINT DIRECTION DETECTION (Left/Right)
 // =============================================================================
 
-/** A single entry in the wrist-position history buffer. */
-export interface WristSample {
-  /** Normalised wrist X in [0, 1] (image space — already mirror-corrected by caller) */
-  x: number;
-  /** performance.now() timestamp in milliseconds */
-  timestamp: number;
-}
+export type PointDirection = 'LEFT' | 'RIGHT' | 'NONE';
 
-export type SwipeDirection = 'LEFT' | 'RIGHT' | 'NONE';
+const POINT_MIN_INDEX_EXTENSION = 0.6;
+const POINT_MIN_HORIZONTAL_COMPONENT = 0.18;
+const POINT_MAX_VERTICAL_COMPONENT = 0.14;
+const POINT_MIN_HORIZONTAL_DOMINANCE = 1.45;
+const POINT_MAX_MIDDLE_CURL = 1.2;
 
 /**
- * Minimum wrist displacement across the detection window for a swipe to
- * register.  0.22 = 22% of the normalised frame width.  Prevents jitter or
- * slow drift from triggering the swipe.
- */
-const SWIPE_MIN_DISPLACEMENT = 0.12;
-
-/**
- * Minimum average velocity (normalised units / ms).
- * Keeps slow, deliberate lateral slides from firing swipes.
- */
-const SWIPE_MIN_VELOCITY = 0.00045;
-
-/**
- * How far back in time (ms) to look for the swipe gesture.
- * 350 ms is generous enough for a brisk natural sweep but tight enough
- * that incidental hand repositioning between gestures never accumulates
- * into a false swipe.
- */
-const SWIPE_WINDOW_MS = 420;
-
-/**
- * Minimum number of distinct samples inside the window before we trust the
- * result.  Prevents a single noisy landmark burst from triggering.
- */
-const SWIPE_MIN_SAMPLES = 3;
-
-/**
- * detectSwipe
+ * detectIndexPointDirection
  *
- * Analyses the recent wrist X history and returns the swipe direction or NONE.
+ * Detects a deliberate "index finger points left/right" gesture from a single
+ * hand frame. The gesture is accepted when:
+ *   1. Index finger is clearly extended,
+ *   2. Tip-to-base vector has strong horizontal component,
+ *   3. Vertical component is relatively small,
+ *   4. Middle finger is not fully extended (helps reject open palm).
  *
- * Algorithm:
- *   1. Trim the history buffer to the last SWIPE_WINDOW_MS milliseconds.
- *   2. Calculate total displacement (last.x − first.x) within that window.
- *   3. Calculate average velocity (|displacement| / elapsed_ms).
- *   4. If both exceed their thresholds → return 'LEFT' or 'RIGHT'.
- *
- * Direction convention (after camera-mirror correction):
- *   displacement < 0  → wrist moved LEFT  in normalised space → 'LEFT'
- *   displacement > 0  → wrist moved RIGHT in normalised space → 'RIGHT'
- *
- * The caller (useGestureDetector) is responsible for:
- *   • Maintaining the history buffer (appending on each frame, pruning old entries).
- *   • Applying a 1–2 s cooldown after a successful swipe so this function is
- *     never called in the cooldown window.
- *   • Using the wrist X from the CORRECT hand (dominant / swipe hand).
- *
- * @param history - Chronologically ordered array of wrist X samples.
+ * Every distance-like measurement is normalized by handSize to remain robust
+ * for users standing at different distances from the camera.
  */
-export function detectSwipe(history: WristSample[]): SwipeDirection {
-  if (history.length < SWIPE_MIN_SAMPLES) return 'NONE';
+export function detectIndexPointDirection(landmarks: NormalizedLandmark[]): PointDirection {
+  const size = handSize(landmarks);
+  if (size < 1e-4) return 'NONE';
 
-  const latest = history[history.length - 1];
-  const windowStart = latest.timestamp - SWIPE_WINDOW_MS;
+  const indexMcp = landmarks[LM.INDEX_MCP];
+  const indexTip = landmarks[LM.INDEX_TIP];
+  const middleTip = landmarks[LM.MIDDLE_TIP];
 
-  // Extract only the samples within the detection window
-  const window = history.filter((s) => s.timestamp >= windowStart);
-  if (window.length < SWIPE_MIN_SAMPLES) return 'NONE';
+  const dxNorm = (indexTip.x - indexMcp.x) / size;
+  const dyNorm = (indexTip.y - indexMcp.y) / size;
+  const indexExtension = dist3(indexTip, indexMcp) / size;
 
-  const first = window[0];
-  const last  = window[window.length - 1];
+  if (indexExtension < POINT_MIN_INDEX_EXTENSION) return 'NONE';
+  if (Math.abs(dxNorm) < POINT_MIN_HORIZONTAL_COMPONENT) return 'NONE';
+  if (Math.abs(dyNorm) > POINT_MAX_VERTICAL_COMPONENT) return 'NONE';
+  if (Math.abs(dxNorm) < Math.abs(dyNorm) * POINT_MIN_HORIZONTAL_DOMINANCE) return 'NONE';
 
-  const displacement = last.x - first.x;
-  const elapsed      = last.timestamp - first.timestamp;
+  const centre = palmCentre(landmarks);
+  const middleCurl = fingerCurlRatio(landmarks, LM.MIDDLE_TIP, centre, size);
+  if (middleCurl > POINT_MAX_MIDDLE_CURL) return 'NONE';
 
-  if (elapsed < 1) return 'NONE'; // guard against divide-by-zero on duplicate timestamps
-
-  const velocity = Math.abs(displacement) / elapsed;
-
-  if (Math.abs(displacement) < SWIPE_MIN_DISPLACEMENT) return 'NONE';
-  if (velocity < SWIPE_MIN_VELOCITY)                   return 'NONE';
-
-  return displacement < 0 ? 'LEFT' : 'RIGHT';
+  return dxNorm < 0 ? 'LEFT' : 'RIGHT';
 }
 
 // =============================================================================

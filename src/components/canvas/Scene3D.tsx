@@ -43,12 +43,7 @@ import {
 import { BlendFunction, KernelSize } from 'postprocessing';
 import * as THREE from 'three';
 
-import { useHandStore }    from '../../store/useHandStore';
 import { useGalleryStore } from '../../store/useGalleryStore';
-import {
-  calculatePinch,
-  grabConfidence,
-} from '../../lib/gestures';
 import type { Lamp } from '../../types';
 
 // =============================================================================
@@ -63,7 +58,7 @@ const MAX_EMISSIVE_INTENSITY = 4.0;
 const MIN_FOV                = 22;
 const MAX_FOV                = 52;
 const FOV_LAMBDA             = 4;
-const SELECTED_OFFSET_X      = -1.6;
+const SELECTED_OFFSET_X      = -1.05;
 const OFFSET_LAMBDA          = 4;
 
 /**
@@ -369,15 +364,15 @@ function LampGroup({ lamp, modelUrl }: LampGroupProps) {
 
 function ZoomController() {
   useFrame(({ camera }, delta) => {
-    const { rightHand } = useHandStore.getState();
-    if (!rightHand) return;
-
-    const pinch     = calculatePinch(rightHand);
+    const pinch = useGalleryStore.getState().pinchNormalized;
     const targetFov = THREE.MathUtils.lerp(MIN_FOV, MAX_FOV, pinch);
 
     const cam = camera as THREE.PerspectiveCamera;
-    cam.fov   = THREE.MathUtils.damp(cam.fov, targetFov, FOV_LAMBDA, delta);
-    cam.updateProjectionMatrix();
+    const nextFov = THREE.MathUtils.damp(cam.fov, targetFov, FOV_LAMBDA, delta);
+    if (Math.abs(nextFov - cam.fov) > 0.01) {
+      cam.fov = nextFov;
+      cam.updateProjectionMatrix();
+    }
   });
   return null;
 }

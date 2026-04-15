@@ -120,8 +120,8 @@ export default function HandTrackingRuntime() {
       aria-hidden="true"
       style={{
         position:     'fixed',
-        top:          16,
-        right:        16,
+        top:          'calc(100vh - 140px)',
+        left:         16,
         width:        220,
         borderRadius: 12,
         overflow:     'hidden',

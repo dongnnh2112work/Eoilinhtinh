@@ -45,11 +45,10 @@ import { useTutorialStore } from '../store/useTutorialStore';
 import {
   grabConfidence,
   calculatePinch,
-  detectSwipe,
-  type WristSample,
+  detectIndexPointDirection,
+  type PointDirection,
   type RotationTarget,
 } from '../lib/gestures';
-import type { NormalizedLandmark } from '../types';
 
 // =============================================================================
 // CONSTANTS
@@ -71,19 +70,15 @@ const SWIPE_COOLDOWN_MS = 700;
  * Maximum entries in the wrist history buffer.  At ~30 fps the 350 ms
  * detection window holds ~10 samples; 60 entries gives ample headroom.
  */
-const WRIST_HISTORY_MAX = 60;
-
-/**
- * Minimum grabConfidence to write isGrabbing = true.
- * A little higher than the boolean threshold so the binary state stabilises
- * before the glow starts ramping.
- */
 const GRAB_CONFIDENCE_THRESHOLD = 0.55;
+const POINT_STABLE_FRAMES = 3;
 const ROTATE_DEADZONE = 0.0009;
 const ROTATE_MAX_DELTA_PER_FRAME = 0.03;
 const ROTATE_SMOOTHING_ALPHA = 0.5;
 const ROTATE_X_SENSITIVITY = Math.PI * 2.4;
 const ROTATE_Y_SENSITIVITY = Math.PI * 2.4;
+const PINCH_WRITE_EPSILON = 0.002;
+const ROTATION_WRITE_EPSILON = 0.0008;
 
 // =============================================================================
 // HOOK
@@ -101,9 +96,9 @@ const ROTATE_Y_SENSITIVITY = Math.PI * 2.4;
  */
 export function useGestureDetector(): void {
   // ── Per-frame mutable refs (never useState — no re-renders) ──────────────
-  const leftWristHistoryRef  = useRef<WristSample[]>([]);
-  const rightWristHistoryRef = useRef<WristSample[]>([]);
   const swipeCooldownUntil = useRef<number>(0);       // performance.now() cutoff
+  const lastPointDirectionRef = useRef<PointDirection>('NONE');
+  const stablePointFramesRef = useRef<number>(0);
   const grabStartTime      = useRef<number | null>(null); // when current grab began
   const wasGrabbing        = useRef<boolean>(false);
   const rotationRef        = useRef<RotationTarget>({ rotX: 0, rotY: 0 });
@@ -125,6 +120,12 @@ export function useGestureDetector(): void {
       const { leftHand, rightHand } = useHandStore.getState();
       const gallery = useGalleryStore.getState();
       const tutorial = useTutorialStore.getState();
+      const patch: Partial<{
+        isGrabbing: boolean;
+        isSelected: boolean;
+        pinchNormalized: number;
+        rotationTarget: RotationTarget;
+      }> = {};
 
       const tutorialDone = tutorial.phase === 'COMPLETED';
       const swipeEnabled = tutorial.phase === 'LEARN_SWIPE' || tutorialDone;
@@ -143,53 +144,47 @@ export function useGestureDetector(): void {
         }
       }
 
-      // ── 1. Swipe detection (both hands, LEFT direction only) ──────────────
-      // Requirement: user swipes either hand to the LEFT to move next.
+      // ── 1. Navigation by index-finger pointing direction ──────────────────
       const leftIsGrabbing = leftHand
         ? grabConfidence(leftHand) > GRAB_CONFIDENCE_THRESHOLD
         : false;
 
-      const appendPalmX = (
-        hand: NormalizedLandmark[] | null,
-        targetHistory: { current: WristSample[] },
-      ) => {
-        if (!hand) {
-          targetHistory.current = [];
-          return;
-        }
-        const palmX = (
-          hand[0].x +
-          hand[5].x +
-          hand[9].x +
-          hand[13].x +
-          hand[17].x
-        ) / 5;
-        targetHistory.current.push({ x: palmX, timestamp: now });
-        if (targetHistory.current.length > WRIST_HISTORY_MAX) {
-          targetHistory.current = targetHistory.current.slice(-WRIST_HISTORY_MAX);
-        }
-      };
-
-      appendPalmX(leftIsGrabbing ? null : leftHand, leftWristHistoryRef);
-      appendPalmX(rightHand, rightWristHistoryRef);
+      const leftPoint = leftIsGrabbing || !leftHand ? 'NONE' : detectIndexPointDirection(leftHand);
+      const rightPoint = rightHand ? detectIndexPointDirection(rightHand) : 'NONE';
+      const pointDirection: PointDirection = leftPoint !== 'NONE' ? leftPoint : rightPoint;
 
       if (swipeEnabled && now > swipeCooldownUntil.current) {
-        const leftHandSwipe = detectSwipe(leftWristHistoryRef.current);
-        const rightHandSwipe = detectSwipe(rightWristHistoryRef.current);
+        if (pointDirection !== 'NONE') {
+          if (pointDirection === lastPointDirectionRef.current) {
+            stablePointFramesRef.current += 1;
+          } else {
+            lastPointDirectionRef.current = pointDirection;
+            stablePointFramesRef.current = 1;
+          }
+        } else {
+          lastPointDirectionRef.current = 'NONE';
+          stablePointFramesRef.current = 0;
+        }
 
-        if (leftHandSwipe === 'LEFT' || rightHandSwipe === 'LEFT') {
-          // Flush both buffers so one gesture cannot chain multiple navigations.
-          leftWristHistoryRef.current = [];
-          rightWristHistoryRef.current = [];
+        if (stablePointFramesRef.current >= POINT_STABLE_FRAMES) {
           swipeCooldownUntil.current = now + SWIPE_COOLDOWN_MS;
+          stablePointFramesRef.current = 0;
+          lastPointDirectionRef.current = 'NONE';
 
-          gallery.navigateNext();
+          if (pointDirection === 'LEFT') {
+            gallery.navigateNext();
+          } else {
+            gallery.navigatePrev();
+          }
 
           // Tutorial auto-advance: LEARN_SWIPE
           if (tutorial.phase === 'LEARN_SWIPE') {
             tutorial.onSwipeDetected();
           }
         }
+      } else if (now <= swipeCooldownUntil.current) {
+        lastPointDirectionRef.current = 'NONE';
+        stablePointFramesRef.current = 0;
       }
 
       // ── 2. Grab detection (left hand) ────────────────────────────────────
@@ -207,15 +202,15 @@ export function useGestureDetector(): void {
           // Transition: open → grab
           if (grabNow) {
             grabStartTime.current = now;
-            useGalleryStore.setState({ isGrabbing: true });
+            if (!gallery.isGrabbing) {
+              patch.isGrabbing = true;
+            }
           } else {
             // Transition: grab → open
             grabStartTime.current = null;
-            useGalleryStore.setState({
-              isGrabbing: false,
-              // Close the info panel when the user releases the grab.
-              isSelected: false,
-            });
+            if (gallery.isGrabbing) patch.isGrabbing = false;
+            // Close the info panel when the user releases the grab.
+            if (gallery.isSelected) patch.isSelected = false;
           }
           wasGrabbing.current = grabNow;
         }
@@ -240,7 +235,7 @@ export function useGestureDetector(): void {
           !gallery.isSelected &&
           now - grabStartTime.current >= GRAB_SELECT_HOLD_MS
         ) {
-          useGalleryStore.setState({ isSelected: true });
+          patch.isSelected = true;
         }
 
       } else {
@@ -248,10 +243,8 @@ export function useGestureDetector(): void {
         if (wasGrabbing.current) {
           grabStartTime.current = null;
           wasGrabbing.current   = false;
-          useGalleryStore.setState({
-            isGrabbing: false,
-            isSelected: false,
-          });
+          if (gallery.isGrabbing) patch.isGrabbing = false;
+          if (gallery.isSelected) patch.isSelected = false;
         }
         grabSeenSince.current = null;
       }
@@ -306,11 +299,18 @@ export function useGestureDetector(): void {
           lastRightPalmY.current = palmY;
         }
 
-        rotationRef.current = {
-          rotX: accumulatedRotX.current,
-          rotY: accumulatedRotY.current,
-        };
-        useGalleryStore.setState({ rotationTarget: rotationRef.current });
+        rotationRef.current.rotX = accumulatedRotX.current;
+        rotationRef.current.rotY = accumulatedRotY.current;
+        const currentTarget = gallery.rotationTarget;
+        if (
+          Math.abs(rotationRef.current.rotX - currentTarget.rotX) > ROTATION_WRITE_EPSILON ||
+          Math.abs(rotationRef.current.rotY - currentTarget.rotY) > ROTATION_WRITE_EPSILON
+        ) {
+          patch.rotationTarget = {
+            rotX: rotationRef.current.rotX,
+            rotY: rotationRef.current.rotY,
+          };
+        }
       } else {
         // Freeze current angle when combo is not active.
         lastRightPalmX.current = null;
@@ -322,9 +322,17 @@ export function useGestureDetector(): void {
       // ── 4. Pinch zoom (right hand thumb + index) ──────────────────────
       if (rightHand) {
         const pinch = calculatePinch(rightHand);
-        useGalleryStore.setState({ pinchNormalized: pinch });
+        if (Math.abs(pinch - gallery.pinchNormalized) > PINCH_WRITE_EPSILON) {
+          patch.pinchNormalized = pinch;
+        }
       } else {
-        useGalleryStore.setState({ pinchNormalized: 1 });
+        if (Math.abs(1 - gallery.pinchNormalized) > PINCH_WRITE_EPSILON) {
+          patch.pinchNormalized = 1;
+        }
+      }
+
+      if (Object.keys(patch).length > 0) {
+        useGalleryStore.setState(patch);
       }
     }
 
