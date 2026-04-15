@@ -1,7 +1,7 @@
 # PROJECT CONTEXT — Eoilinhtinh Interactive 3D Landing Page
 **Version:** MVP 1.0 — Architecture frozen as of April 2026
 **Architect:** Factory Interactive
-**Status:** Frontend + CMS complete. Gesture detector hook (`useGestureDetector.ts`) and AppShell wiring are the remaining pieces before end-to-end testing.
+**Status:** Running end-to-end locally. Gesture pipeline, tutorial auto-advance, 3MF catalogue, and hydration guards are implemented.
 
 ---
 
@@ -22,14 +22,14 @@ The system tracks hand landmarks in real time, classifies gestures (swipe, grab,
 | AI / Vision | `@mediapipe/tasks-vision` Hand Landmarker | ^0.10.14 |
 | 3D Renderer | `@react-three/fiber` + `three` | ^9.6.0 / ^0.171.0 |
 | 3D Helpers | `@react-three/drei` | ^10.7.7 |
-| 3D Loaders | `three-stdlib` (STLLoader) | ^2.35.0 |
+| 3D Loaders | `three-stdlib` (ThreeMFLoader) | ^2.35.0 |
 | Post-Processing | `@react-three/postprocessing` + `postprocessing` | ^3.0.4 / ^6.39.0 |
 | State Management | `zustand` | ^5.0.3 |
 | Cloud Storage | `@vercel/blob` | ^0.27.1 |
 | Styling | TailwindCSS v4 + `@tailwindcss/postcss` | ^4.1.4 |
 | Language | TypeScript | ^5.7.3 |
 
-**WASM assets** (`hand_landmarker.task`, `vision_wasm_internal.wasm`, etc.) are served as static files from `/public/mediapipe/` — they are NOT bundled by webpack and must NOT be imported as modules.
+**WASM + model assets** for MediaPipe are loaded from CDN URLs in `useHandWorker.ts` (`jsDelivr` + Google Storage) and passed to the worker via `INIT`.
 
 ---
 
@@ -46,15 +46,17 @@ src/
 │
 ├── components/
 │   ├── AdminUpload.tsx            # Operator CMS panel — file drop, loading states
+│   ├── AppShellClient.tsx          # Client-only shell, dynamic scene/camera mount
 │   ├── camera/
-│   │   └── HandTrackingRuntime.tsx # Mounts hidden <video>, calls useHandWorker
+│   │   └── HandTrackingRuntime.tsx # Camera preview + tracking status + useHandWorker
 │   ├── canvas/
-│   │   └── Scene3D.tsx            # R3F Canvas — STLLoader, lighting, glow, Bloom
+│   │   └── Scene3D.tsx            # R3F Canvas — ThreeMFLoader, lighting, Bloom
 │   └── ui/
 │       ├── MainOverlay.tsx        # Post-tutorial UI — InfoPanel, LampCounter
 │       └── TutorialOverlay.tsx    # Onboarding wizard — 5 guided steps
 │
 ├── hooks/
+│   ├── useGestureDetector.ts      # Frame-by-frame gesture interpretation + intent writes
 │   └── useHandWorker.ts           # Worker lifecycle, rVFC capture loop, Zustand writes
 │
 ├── lib/
@@ -167,11 +169,11 @@ type WorkerOutboundMessage =
   | { type: 'RESULT'; payload: HandTrackingPayload }
 ```
 
-### 4.6 Camera Mirror Correction
+### 4.6 Handedness / Camera Mapping
 
-`CAMERA_IS_MIRRORED = true` in `handTracking.worker.ts`.
+`CAMERA_IS_MIRRORED = false` in `handTracking.worker.ts`.
 
-MediaPipe labels hands by which side of the *image* they appear on. For a front-facing kiosk webcam, the user's anatomical RIGHT hand appears on the LEFT of the image. Without correction, all left/right gesture logic would be backwards. The worker resolves this before posting results:
+The project currently runs with non-mirrored anatomical mapping (`false`) because the preview feed is calibrated to left/right as seen by the user in this setup.
 
 ```
 MediaPipe "Left"  →  user's anatomical right hand
@@ -220,34 +222,30 @@ GRAB_CLOSED_RATIO = 0.55  (mean curl ratio when fully closed)
 confidence = clamp( (OPEN - meanCurl) / (OPEN - CLOSED), 0, 1 )
 ```
 
-### 5.4 isPalmOpen Guard
-
-A separate `isPalmOpen` function (threshold 1.25, looser than `isGrabbing` threshold 1.05) gates rotation tracking. This prevents the 3D model from rotating erratically as the user transitions from open-palm to fist — rotation tracking stops the moment fingers begin curling.
-
-### 5.5 Swipe Detection
+### 5.4 Swipe Detection
 
 ```typescript
 detectSwipe(history: WristSample[]): 'LEFT' | 'RIGHT' | 'NONE'
 ```
 
-- Sliding time window: **350 ms**
-- Minimum displacement: **0.22** (22% of normalised frame width)
-- Minimum velocity: **0.0008 units/ms**
-- Minimum samples: **4 frames** (prevents a single noisy burst)
-- Both displacement AND velocity must satisfy their thresholds simultaneously
+- Sliding time window: **420 ms**
+- Minimum displacement: **0.12** (12% of normalised frame width)
+- Minimum velocity: **0.00045 units/ms**
+- Minimum samples: **3 frames**
+- Runtime behavior in `useGestureDetector.ts`: accept swipe when **left OR right hand** moves to **LEFT** (next product), with cooldown.
 
 The caller (`useGestureDetector.ts`) is responsible for maintaining the history buffer and applying a **1–2 second cooldown** after a confirmed swipe.
 
-### 5.6 Rotation Mapping
+### 5.5 Rotation Mapping (Current UX)
 
-```
-palm X in [0,1] → normalised [-1,1] × COORD_SCALE(1.4) → × MAX_ROT_Y(π×0.5) → rotation.y
-palm Y in [0,1] → normalised [-1,1] × COORD_SCALE(1.4) → × MAX_ROT_X(π×0.4) → rotation.x
-```
+Rotation is now driven by **2D palm deltas** (camera plane), not absolute open-palm mapping:
 
-`COORD_SCALE = 1.4` compensates for users rarely sweeping their palm to the extreme edges of frame — it expands the effective input range to fill the full ±1 output space.
+- Condition to rotate: **left hand grab is active** AND right hand is tracked.
+- `deltaX` (right hand moving left/right) integrates into `rotationTarget.rotX`.
+- `deltaY` (right hand moving up/down) integrates into `rotationTarget.rotY` (inverted so moving hand up rotates positive Y).
+- Deadzone + clamp + smoothing are applied per frame to reduce jitter.
 
-### 5.7 Pinch Zoom
+### 5.6 Pinch Zoom
 
 ```
 pinchNorm = clamp( (dist3(THUMB_TIP, INDEX_TIP)/handSize - 0.15) / (0.80 - 0.15), 0, 1 )
@@ -268,17 +266,18 @@ pinchNorm = clamp( (dist3(THUMB_TIP, INDEX_TIP)/handSize - 0.15) / (0.80 - 0.15)
 
 `flat={true}` disables Three.js's ACESFilmic tone mapping. **This is not optional.** Without it, emissive values above 1.0 are clamped before the Bloom pass sees them, producing no visible glow halo. With `flat`, emissive intensity of 4.0 passes through to the `EffectComposer` unclamped.
 
-### 6.2 STL Loading Pipeline
+### 6.2 3MF Loading Pipeline
 
-STL is the canonical 3D format for this project (direct slicer/CAD export format). GLB is not used.
+3MF is the active model format for this project. The catalogue currently uses:
+`/public/models/lamp-aurora.3mf`, `/public/models/lamp-helix.3mf`, `/public/models/lamp-strata.3mf`.
 
 ```
-useLoader(STLLoader, url)          ← suspends until geometry arrives
-  → BufferGeometry (raw CAD coords)
-  → geometry.computeVertexNormals()  ← STL binary has face normals only; vertex normals needed for smooth shading
-  → geometry.computeBoundingSphere() ← for auto-scale
-  → autoScale = TARGET_WORLD_SIZE(3.2) / (radius × 2)
-  → <Center> recentres the scaled mesh (CAD pivots are often at build-plate corner)
+ThreeMFLoader.load(url, onLoad, onProgress, onError)
+  → Object3D scene graph (possibly multiple meshes)
+  → traverse meshes → inject MeshStandardMaterial
+  → Box3 normalization to TARGET_WORLD_SIZE(3.2)
+  → recenter model to world origin
+  → if parse/load fails: render procedural fallback mesh (keeps app interactive)
 ```
 
 **Why bounding sphere, not box?**
@@ -286,36 +285,20 @@ The sphere gives a uniform scale factor accounting for the longest dimension acr
 
 ### 6.3 Material Injection
 
-STL files contain **zero material data**. The entire visual appearance is defined in `LampSTLMesh`:
+Loaded 3MF meshes are normalized to a unified material profile in `LampModelMesh`:
 
 ```tsx
-<meshStandardMaterial
-  ref={matRef}
-  color="#9a9aae"               // neutral blue-grey base
-  emissive={new THREE.Color(lamp.accentColor)}  // per-lamp brand colour
-  emissiveIntensity={0}         // driven by useFrame, starts at 0
-  roughness={0.42}
-  metalness={0.55}
-/>
+new THREE.MeshStandardMaterial({
+  color: '#9a9aae',
+  roughness: 0.42,
+  metalness: 0.55,
+})
 ```
 
-### 6.4 Glow System — Asymmetric Damping
+### 6.4 Grab Behavior
 
-```typescript
-// Inside useFrame, every frame:
-const confidence = leftHand ? grabConfidence(leftHand) : 0;
-const targetEmissive = confidence * MAX_EMISSIVE_INTENSITY; // 4.0
-
-mat.emissiveIntensity = THREE.MathUtils.damp(
-  mat.emissiveIntensity,
-  targetEmissive,
-  isGrabbing ? GLOW_IN_LAMBDA(12) : GLOW_OUT_LAMBDA(3),
-  delta
-);
-```
-
-Fast fade-in (λ=12) → glow confirms immediately when fist forms.
-Slow fade-out (λ=3) → glow lingers after release, giving clear visual confirmation.
+The previous emissive grab glow was removed to match the latest interaction requirement.
+Left-hand grab now functions as a control-state trigger (select/open + enable rotation combo), not a visual glow effect.
 
 ### 6.5 All Damping Constants
 
@@ -323,8 +306,6 @@ Slow fade-out (λ=3) → glow lingers after release, giving clear visual confirm
 |---|---|---|
 | `ROTATION_LAMBDA` | 5 | Rotation tracking speed (absorbs MediaPipe jitter) |
 | `RETURN_LAMBDA` | 2 | Drift back to origin when no hand present |
-| `GLOW_IN_LAMBDA` | 12 | Emissive ramp-up on grab |
-| `GLOW_OUT_LAMBDA` | 3 | Emissive decay on release |
 | `FOV_LAMBDA` | 4 | Camera FOV zoom via pinch |
 | `OFFSET_LAMBDA` | 4 | Model X-offset when InfoPanel opens |
 
@@ -462,7 +443,7 @@ useEffect(() => {
 `src/app/actions/uploadModel.ts` implements a **five-layer validation** before calling `put()`:
 
 1. **Type check** — `file instanceof File` guard
-2. **Extension check** — `.stl` suffix required (re-checked server-side; client `accept=".stl"` is not a security boundary)
+2. **Extension check** — currently `.stl` suffix (legacy admin path)
 3. **Size guard** — hard cap at 50 MB
 4. **Magic-byte sniff** — reads first 8 bytes and rejects known foreign types (JPEG, PNG, GIF, PDF, ZIP) by their binary signatures. STL has no fixed magic bytes, so the approach is "deny known-bad"
 5. **Filename sanitisation** — strips non-alphanumeric characters, caps at 64 chars, prepends `Date.now()` timestamp
@@ -486,8 +467,8 @@ AdminUpload.tsx (client)
 
 | Event | `activeModelUrl` value |
 |---|---|
-| Initial load | `activeLamp.modelPath` (static `/public` path) |
-| Admin uploads new STL | Vercel Blob CDN URL |
+| Initial load | `activeLamp.modelPath` (static `/public` 3MF path) |
+| Admin uploads new STL (legacy) | Vercel Blob CDN URL |
 | User swipes to next lamp | New lamp's `modelPath` (Blob URL discarded) |
 
 Navigation **always** resets `activeModelUrl` to the catalogue's static path. This is intentional — the display should always show the correct product after a swipe.
@@ -500,17 +481,18 @@ These constants are the primary knobs for calibrating the experience. They are *
 
 | Constant | File | Default | What it controls |
 |---|---|---|---|
-| `CAMERA_IS_MIRRORED` | `handTracking.worker.ts:45` | `true` | Handedness label flip |
+| `CAMERA_IS_MIRRORED` | `handTracking.worker.ts` | `false` | Handedness mapping mode |
 | `CAPTURE_WIDTH/HEIGHT` | `useHandWorker.ts:19-20` | `640×360` | Frame downscale before worker |
 | `GRAB_CURL_THRESHOLD` | `gestures.ts` | `1.05` | Grab detection sensitivity |
 | `GRAB_OPEN_RATIO` | `gestures.ts` | `1.5` | Confidence score open endpoint |
 | `GRAB_CLOSED_RATIO` | `gestures.ts` | `0.55` | Confidence score closed endpoint |
-| `PALM_OPEN_THRESHOLD` | `gestures.ts` | `1.25` | Rotation tracking gate |
-| `SWIPE_MIN_DISPLACEMENT` | `gestures.ts` | `0.22` | Swipe distance threshold |
-| `SWIPE_MIN_VELOCITY` | `gestures.ts` | `0.0008` | Swipe speed threshold |
-| `SWIPE_WINDOW_MS` | `gestures.ts` | `350` | Swipe detection time window |
-| `TARGET_WORLD_SIZE` | `Scene3D.tsx` | `3.2` | STL auto-scale target diameter |
-| `MAX_EMISSIVE_INTENSITY` | `Scene3D.tsx` | `4.0` | Peak glow brightness |
+| `SWIPE_MIN_DISPLACEMENT` | `gestures.ts` | `0.12` | Swipe distance threshold |
+| `SWIPE_MIN_VELOCITY` | `gestures.ts` | `0.00045` | Swipe speed threshold |
+| `SWIPE_WINDOW_MS` | `gestures.ts` | `420` | Swipe detection time window |
+| `SWIPE_MIN_SAMPLES` | `gestures.ts` | `3` | Swipe sample stability |
+| `TARGET_WORLD_SIZE` | `Scene3D.tsx` | `3.2` | 3MF auto-scale target diameter |
+| `ROTATE_X_SENSITIVITY` | `useGestureDetector.ts` | `π × 2.4` | Horizontal hand -> rotX |
+| `ROTATE_Y_SENSITIVITY` | `useGestureDetector.ts` | `π × 2.4` | Vertical hand -> rotY |
 | `SELECTED_OFFSET_X` | `Scene3D.tsx` | `-1.6` | Model left-shift when panel opens |
 | `ROTATE_REQUIRED_SECONDS` | `TutorialOverlay.tsx` | `3.5` | Rotate step completion timer |
 
@@ -523,20 +505,19 @@ These constants are the primary knobs for calibrating the experience. They are *
 - Web Worker + rVFC frame pipeline
 - Zustand stores (hand, gallery, tutorial)
 - Pure gesture math library (`lib/gestures.ts`)
-- Scene3D: STLLoader, auto-scale, material injection, glow, Bloom
+- Scene3D: ThreeMFLoader, auto-scale, robust fallback mesh, Bloom
 - Tutorial overlay (5-step state machine, `guardedAdvance`)
 - Main overlay (InfoPanel, LampCounter, SwipeFeedback)
 - Server Action + Vercel Blob upload
 - AdminUpload component
+- Gesture bridge (`useGestureDetector.ts`) wired and active
+- Client shell (`AppShellClient.tsx`) with hydration guard + dynamic scene/camera loading
 
-### 🔲 Not Yet Implemented
+### 🔲 Remaining / Optional Improvements
 
-- `useGestureDetector.ts` — the hook that calls `lib/gestures.ts` on each frame and writes intent to `useGalleryStore`. This is the **bridge** between the data pipeline and the application state.
-- `AppShell.tsx` — the top-level CSR component that mounts `Scene3D`, `TutorialOverlay`, `MainOverlay`, and `HandTrackingRuntime` in one layout.
-- `WebcamFeed.tsx` / `HandTrackingRuntime.tsx` — mounts the hidden `<video>` element, requests camera permission, attaches the stream, passes `videoRef` to `useHandWorker`.
 - `useWebhook.ts` — one-shot POST hook with lock flag. Fires `{ action: 'turn_on', lampId }` exactly once per confirmed grab.
 - `/admin` route — mounts `<AdminUpload>` for operator use.
-- Actual `.stl` model files in `/public/models/`.
+- Migrate upload validation from STL-only to 3MF-aware if admin upload is required in production.
 
 ---
 
