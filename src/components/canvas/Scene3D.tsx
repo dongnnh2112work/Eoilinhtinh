@@ -227,11 +227,35 @@ function LampModelMesh({ url }: LampModelMeshProps) {
           if (!mesh.isMesh) return;
           mesh.castShadow = true;
           mesh.receiveShadow = true;
-          mesh.material = new THREE.MeshStandardMaterial({
-            color: '#9a9aae',
-            roughness: 0.42,
-            metalness: 0.55,
-          });
+          const hasMaterial = Array.isArray(mesh.material)
+            ? mesh.material.length > 0
+            : mesh.material !== undefined && mesh.material !== null;
+
+          if (!hasMaterial) {
+            mesh.material = new THREE.MeshStandardMaterial({
+              color: '#9a9aae',
+              roughness: 0.42,
+              metalness: 0.55,
+            });
+            return;
+          }
+
+          const applyPbrDefaults = (mat: THREE.Material) => {
+            // Preserve source color/material from 3MF, only fill missing PBR knobs.
+            if ('roughness' in mat && typeof mat.roughness === 'number') {
+              mat.roughness = mat.roughness ?? 0.42;
+            }
+            if ('metalness' in mat && typeof mat.metalness === 'number') {
+              mat.metalness = mat.metalness ?? 0.55;
+            }
+            mat.needsUpdate = true;
+          };
+
+          if (Array.isArray(mesh.material)) {
+            mesh.material.forEach((mat) => applyPbrDefaults(mat));
+          } else {
+            applyPbrDefaults(mesh.material);
+          }
         });
 
         const box = new THREE.Box3().setFromObject(cloned);

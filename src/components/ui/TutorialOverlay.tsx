@@ -131,6 +131,42 @@ function FistIcon({ className = '' }: { className?: string }) {
 }
 
 /**
+ * PointingHandIcon — index finger extended horizontally.
+ * Used in LEARN_SWIPE step to match the current point-left/right navigation gesture.
+ */
+function PointingHandIcon({
+  direction,
+  className = '',
+}: {
+  direction: 'left' | 'right';
+  className?: string;
+}) {
+  const isRight = direction === 'right';
+  return (
+    <svg
+      viewBox="0 0 140 90"
+      fill="none"
+      stroke="white"
+      strokeWidth="4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      style={{ transform: isRight ? undefined : 'scaleX(-1)' }}
+    >
+      {/* Index finger */}
+      <path d="M22 45 H112" />
+      {/* Finger tip hook */}
+      <path d="M112 45 Q122 45 124 38" />
+      {/* Folded fingers + palm */}
+      <path d="M44 45 Q40 34 48 28 Q56 22 64 30 Q68 20 78 22 Q86 24 88 34 Q96 28 104 32 Q112 36 108 46" />
+      <path d="M40 46 Q32 52 34 62 Q36 72 50 72 H82 Q98 72 102 58" />
+      {/* Thumb */}
+      <path d="M52 52 Q44 56 44 63" />
+    </svg>
+  );
+}
+
+/**
  * SwipeArrow — a simple animated directional chevron.
  * The `direction` prop flips it for left vs right swipe hints.
  */
@@ -288,19 +324,22 @@ function StepLearnSwipe() {
 
   return (
     <div className="flex flex-col items-center gap-10">
-      <StepHeadline>Swipe to Explore</StepHeadline>
+      <StepHeadline>Point to Explore</StepHeadline>
 
-      {/* Giant directional arrows with alternating bounce */}
+      {/* Directional arrows + pointing-hand gesture icons */}
       <div className="flex items-center gap-16 my-2">
         <SwipeArrow direction="left"  delay="0ms" />
 
-        <OutlineHand className="w-32 h-32 opacity-60" animate={false} />
+        <div className="flex items-center gap-6">
+          <PointingHandIcon direction="left" className="w-28 h-20 opacity-70" />
+          <PointingHandIcon direction="right" className="w-28 h-20 opacity-70" />
+        </div>
 
         <SwipeArrow direction="right" delay="200ms" />
       </div>
 
       <StepSubtitle>
-        Swipe your hand left or right to browse our lamp collection.
+        Point your index finger left or right to browse our lamp collection.
       </StepSubtitle>
     </div>
   );
@@ -541,7 +580,7 @@ function SkipButton({ onSkip }: { onSkip: () => void }) {
 const STEP_LABELS: Record<string, string> = {
   REQUESTING_CAMERA: 'Camera',
   WAITING_FOR_HAND:  'Hand',
-  LEARN_SWIPE:       'Swipe',
+  LEARN_SWIPE:       'Point',
   LEARN_GRAB:        'Grab',
   LEARN_ROTATE:      'Rotate',
 };

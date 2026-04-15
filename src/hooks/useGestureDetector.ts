@@ -101,6 +101,7 @@ export function useGestureDetector(): void {
   const stablePointFramesRef = useRef<number>(0);
   const grabStartTime      = useRef<number | null>(null); // when current grab began
   const wasGrabbing        = useRef<boolean>(false);
+  const wasRightGrabbing   = useRef<boolean>(false);
   const rotationRef        = useRef<RotationTarget>({ rotX: 0, rotY: 0 });
   const accumulatedRotX    = useRef<number>(0);
   const accumulatedRotY    = useRef<number>(0);
@@ -250,6 +251,33 @@ export function useGestureDetector(): void {
       }
 
       // ── 3. Rotation control: hold LEFT fist + move RIGHT hand ────────────
+      // Extra UX reset:
+      //   - If lamp is selected and user closes RIGHT fist, reset orientation
+      //     to origin so the model can recover from extreme 360 turns quickly.
+      const rightGrabNow = rightHand
+        ? grabConfidence(rightHand) > GRAB_CONFIDENCE_THRESHOLD
+        : false;
+
+      if (gallery.isSelected && rightGrabNow && !wasRightGrabbing.current) {
+        accumulatedRotX.current = 0;
+        accumulatedRotY.current = 0;
+        rotationRef.current.rotX = 0;
+        rotationRef.current.rotY = 0;
+        lastRightPalmX.current = null;
+        lastRightPalmY.current = null;
+        filteredDxRef.current = 0;
+        filteredDyRef.current = 0;
+
+        const currentTarget = gallery.rotationTarget;
+        if (
+          Math.abs(currentTarget.rotX) > ROTATION_WRITE_EPSILON ||
+          Math.abs(currentTarget.rotY) > ROTATION_WRITE_EPSILON
+        ) {
+          patch.rotationTarget = { rotX: 0, rotY: 0 };
+        }
+      }
+      wasRightGrabbing.current = rightGrabNow;
+
       // Mapping for 2D camera input:
       //   - right hand left/right movement  -> model rotation X
       //   - right hand up/down movement     -> model rotation Y
