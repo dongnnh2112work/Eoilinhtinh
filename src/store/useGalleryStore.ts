@@ -52,6 +52,17 @@ const LAMP_CATALOGUE: Lamp[] = [
     material: 'PLA Matte White',
     printTime: '8h 10m',
   },
+  {
+    id: 'lamp-waves',
+    name: 'Waves Designer Lamp',
+    tagline: 'Designer-esqe Lampshade',
+    description:
+      'Designer-esqe lamp with customisable lamp base and included attachment-modifier for your own lampshade designs.',
+    modelPath: '/models/lampshade.3mf',
+    accentColor: '#FFD8A8',
+    material: '3D Printable Lampshade',
+    printTime: 'N/A',
+  },
 ];
 
 // =============================================================================
