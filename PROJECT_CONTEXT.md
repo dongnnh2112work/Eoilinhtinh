@@ -1,7 +1,7 @@
 # PROJECT CONTEXT — Eoilinhtinh Interactive 3D Landing Page
 **Version:** MVP 1.0 — Architecture frozen as of April 2026
 **Architect:** Factory Interactive
-**Status:** Running end-to-end locally. Gesture pipeline, tutorial auto-advance, 3MF catalogue, and hydration guards are implemented.
+**Status:** Running end-to-end locally. Gesture pipeline, tutorial auto-advance, 3MF catalogue (4 models), and hydration guards are implemented.
 
 ---
 
@@ -222,19 +222,21 @@ GRAB_CLOSED_RATIO = 0.55  (mean curl ratio when fully closed)
 confidence = clamp( (OPEN - meanCurl) / (OPEN - CLOSED), 0, 1 )
 ```
 
-### 5.4 Swipe Detection
+### 5.4 Navigation Gesture (Index Point Left/Right)
 
 ```typescript
-detectSwipe(history: WristSample[]): 'LEFT' | 'RIGHT' | 'NONE'
+detectIndexPointDirection(landmarks): 'LEFT' | 'RIGHT' | 'NONE'
 ```
 
-- Sliding time window: **420 ms**
-- Minimum displacement: **0.12** (12% of normalised frame width)
-- Minimum velocity: **0.00045 units/ms**
-- Minimum samples: **3 frames**
-- Runtime behavior in `useGestureDetector.ts`: accept swipe when **left OR right hand** moves to **LEFT** (next product), with cooldown.
+- Runtime behavior in `useGestureDetector.ts`:
+  - Detect pointing direction from either hand (left is preferred unless grabbing).
+  - Require **3 stable consecutive frames** before firing navigation.
+  - Apply **700 ms cooldown** after each navigation.
+  - Direction mapping:
+    - `LEFT` point → `navigateNext()`
+    - `RIGHT` point → `navigatePrev()`
 
-The caller (`useGestureDetector.ts`) is responsible for maintaining the history buffer and applying a **1–2 second cooldown** after a confirmed swipe.
+Point validation uses normalized geometry checks (index extension, horizontal dominance, vertical rejection, middle-finger curl guard) so it remains stable across 1.0–1.5m distance and avoids accidental open-palm triggers.
 
 ### 5.5 Rotation Mapping (Current UX)
 
@@ -269,7 +271,7 @@ pinchNorm = clamp( (dist3(THUMB_TIP, INDEX_TIP)/handSize - 0.15) / (0.80 - 0.15)
 ### 6.2 3MF Loading Pipeline
 
 3MF is the active model format for this project. The catalogue currently uses:
-`/public/models/lamp-aurora.3mf`, `/public/models/lamp-helix.3mf`, `/public/models/lamp-strata.3mf`.
+`/public/models/lamp-aurora.3mf`, `/public/models/lamp-helix.3mf`, `/public/models/lamp-strata.3mf`, `/public/models/main_rc1.3mf` (Cloud Glow / "Đèn đám mây").
 
 ```
 ThreeMFLoader.load(url, onLoad, onProgress, onError)
@@ -378,7 +380,7 @@ The screen is viewed by users of varying heights (children to adults) from 1–1
 
 ### 7.4 Info Panel Layout
 
-When `isGrabbing || isSelected`, the info panel slides in from the **right edge** of the screen. The 3D model simultaneously offsets **left** by `SELECTED_OFFSET_X = -1.6` world units (damped, handled in `Scene3D`'s `LampGroup.useFrame`). The two motions are coordinated purely through shared Zustand state — no prop drilling.
+When `isGrabbing || isSelected`, the info panel slides in from the **right edge** of the screen. The 3D model simultaneously offsets **left** by `SELECTED_OFFSET_X = -1.05` world units (damped, handled in `Scene3D`'s `LampGroup.useFrame`). The two motions are coordinated purely through shared Zustand state — no prop drilling.
 
 ---
 
@@ -486,14 +488,17 @@ These constants are the primary knobs for calibrating the experience. They are *
 | `GRAB_CURL_THRESHOLD` | `gestures.ts` | `1.05` | Grab detection sensitivity |
 | `GRAB_OPEN_RATIO` | `gestures.ts` | `1.5` | Confidence score open endpoint |
 | `GRAB_CLOSED_RATIO` | `gestures.ts` | `0.55` | Confidence score closed endpoint |
-| `SWIPE_MIN_DISPLACEMENT` | `gestures.ts` | `0.12` | Swipe distance threshold |
-| `SWIPE_MIN_VELOCITY` | `gestures.ts` | `0.00045` | Swipe speed threshold |
-| `SWIPE_WINDOW_MS` | `gestures.ts` | `420` | Swipe detection time window |
-| `SWIPE_MIN_SAMPLES` | `gestures.ts` | `3` | Swipe sample stability |
+| `POINT_MIN_INDEX_EXTENSION` | `gestures.ts` | `0.6` | Minimum normalized index extension |
+| `POINT_MIN_HORIZONTAL_COMPONENT` | `gestures.ts` | `0.18` | Minimum horizontal direction strength |
+| `POINT_MAX_VERTICAL_COMPONENT` | `gestures.ts` | `0.14` | Max vertical drift allowed for point |
+| `POINT_MIN_HORIZONTAL_DOMINANCE` | `gestures.ts` | `1.45` | Horizontal-vs-vertical dominance ratio |
+| `POINT_MAX_MIDDLE_CURL` | `gestures.ts` | `1.2` | Reject open palm as pointing |
+| `POINT_STABLE_FRAMES` | `useGestureDetector.ts` | `3` | Consecutive frames needed before nav fire |
+| `SWIPE_COOLDOWN_MS` | `useGestureDetector.ts` | `700` | Cooldown between point-triggered navigations |
 | `TARGET_WORLD_SIZE` | `Scene3D.tsx` | `3.2` | 3MF auto-scale target diameter |
 | `ROTATE_X_SENSITIVITY` | `useGestureDetector.ts` | `π × 2.4` | Horizontal hand -> rotX |
 | `ROTATE_Y_SENSITIVITY` | `useGestureDetector.ts` | `π × 2.4` | Vertical hand -> rotY |
-| `SELECTED_OFFSET_X` | `Scene3D.tsx` | `-1.6` | Model left-shift when panel opens |
+| `SELECTED_OFFSET_X` | `Scene3D.tsx` | `-1.05` | Model left-shift when panel opens |
 | `ROTATE_REQUIRED_SECONDS` | `TutorialOverlay.tsx` | `3.5` | Rotate step completion timer |
 
 ---
